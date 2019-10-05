@@ -4,6 +4,7 @@
  */
 package io.enmasse.systemtest.platform;
 
+import io.enmasse.client.DefaultEnmasseKubernetesClient;
 import io.enmasse.systemtest.Endpoint;
 import io.enmasse.systemtest.executor.Executor;
 import io.enmasse.systemtest.logs.CustomLogger;
@@ -32,7 +33,7 @@ public class Minikube extends Kubernetes {
             // Workaround https://github.com/square/okhttp/issues/3146
             httpClient = httpClient.newBuilder().protocols(Collections.singletonList(Protocol.HTTP_1_1)).build();
 
-            return new DefaultKubernetesClient(httpClient, config);
+            return new DefaultEnmasseKubernetesClient(httpClient, config);
         });
     }
 
