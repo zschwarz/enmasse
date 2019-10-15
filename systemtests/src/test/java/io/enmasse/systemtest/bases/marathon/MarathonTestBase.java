@@ -11,7 +11,7 @@ import io.enmasse.systemtest.SysytemTestsErrorCollector;
 import io.enmasse.systemtest.UserCredentials;
 import io.enmasse.systemtest.amqp.AmqpClient;
 import io.enmasse.systemtest.bases.TestBase;
-import io.enmasse.systemtest.clients.ClientUtils;
+import io.enmasse.systemtest.utils.MessagingUtils;
 import io.enmasse.systemtest.logs.CustomLogger;
 import io.enmasse.systemtest.model.address.AddressType;
 import io.enmasse.systemtest.selenium.SeleniumManagement;
@@ -219,8 +219,8 @@ public abstract class MarathonTestBase extends TestBase {
 
         runTestInLoop(30, () -> {
             log.info("Start test loop basic auth tests");
-            new ClientUtils().assertCanConnect(addressSpace, user, Arrays.asList(queue, topic), resourcesManager);
-            new ClientUtils().assertCannotConnect(addressSpace, new UserCredentials("nobody", "nobody"), Arrays.asList(queue, topic), resourcesManager);
+            new MessagingUtils().assertCanConnect(addressSpace, user, Arrays.asList(queue, topic), resourcesManager);
+            new MessagingUtils().assertCannotConnect(addressSpace, new UserCredentials("nobody", "nobody"), Arrays.asList(queue, topic), resourcesManager);
         });
         log.info("testAuthSendReceiveLong finished");
     }
@@ -291,7 +291,7 @@ public abstract class MarathonTestBase extends TestBase {
         runTestInLoop(30, () -> {
             SeleniumProvider selenium = SeleniumProvider.getInstance();
             selenium.setupDriver(TestUtils.getFirefoxDriver());
-            consoleWebPage = new ConsoleWebPage(selenium, getConsoleRoute(addressSpace), addressSpace, clusterUser);
+            consoleWebPage = new ConsoleWebPage(selenium, kubernetes.getConsoleRoute(addressSpace), addressSpace, clusterUser);
             consoleWebPage.openWebConsolePage(user);
             try {
                 consoleWebPage.createAddressesWebConsole(addresses.toArray(new Address[0]));
@@ -301,7 +301,7 @@ public abstract class MarathonTestBase extends TestBase {
                 selenium.tearDownDrivers();
             } catch (Exception ex) {
                 selenium.setupDriver(TestUtils.getFirefoxDriver());
-                consoleWebPage = new ConsoleWebPage(selenium, getConsoleRoute(addressSpace), addressSpace, clusterUser);
+                consoleWebPage = new ConsoleWebPage(selenium, kubernetes.getConsoleRoute(addressSpace), addressSpace, clusterUser);
                 consoleWebPage.openWebConsolePage(user);
                 throw new Exception(ex);
             }

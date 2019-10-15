@@ -167,8 +167,8 @@ class CommonTest extends TestBase implements ITestBaseIsolated {
         resourcesManager.createOrUpdateUser(brokered, user);
         resourcesManager.createOrUpdateUser(standard, user);
 
-        List<Address> brokeredAddresses = getAllBrokeredAddresses(brokered);
-        List<Address> standardAddresses = getAllStandardAddresses(standard);
+        List<Address> brokeredAddresses = AddressUtils.getAllBrokeredAddresses(brokered);
+        List<Address> standardAddresses = AddressUtils.getAllStandardAddresses(standard);
 
         resourcesManager.setAddresses(brokeredAddresses.toArray(new Address[0]));
         resourcesManager.setAddresses(standardAddresses.toArray(new Address[0]));
@@ -344,7 +344,7 @@ class CommonTest extends TestBase implements ITestBaseIsolated {
                 .build();
         resourcesManager.createAddressSpace(standard);
         resourcesManager.createOrUpdateUser(standard, new UserCredentials("jenda", "cenda"));
-        resourcesManager.setAddresses(getAllStandardAddresses(standard).toArray(new Address[0]));
+        resourcesManager.setAddresses(AddressUtils.getAllStandardAddresses(standard).toArray(new Address[0]));
 
         String qdRouterName = TestUtils.listRunningPods(kubernetes, standard).stream()
                 .filter(pod -> pod.getMetadata().getName().contains("qdrouter"))
@@ -393,8 +393,8 @@ class CommonTest extends TestBase implements ITestBaseIsolated {
         resourcesManager.createOrUpdateUser(brokered, user);
         resourcesManager.createOrUpdateUser(standard, user);
 
-        List<Address> brokeredAddresses = getAllBrokeredAddresses(brokered);
-        List<Address> standardAddresses = getAllStandardAddresses(standard);
+        List<Address> brokeredAddresses = AddressUtils.getAllBrokeredAddresses(brokered);
+        List<Address> standardAddresses = AddressUtils.getAllStandardAddresses(standard);
 
         resourcesManager.setAddresses(brokeredAddresses.toArray(new Address[0]));
         resourcesManager.setAddresses(standardAddresses.toArray(new Address[0]));
@@ -432,7 +432,7 @@ class CommonTest extends TestBase implements ITestBaseIsolated {
         } finally {
             // Ensure that EnMasse's API services are finished re-registering (after api-server restart) before ending
             // the test otherwise test clean-up will fail.
-            assertWaitForValue(true, () -> KubeCMDClient.getApiServices("v1beta1.enmasse.io").getRetCode(), new TimeoutBudget(90, TimeUnit.SECONDS));
+            TestUtils.assertWaitForValue(true, () -> KubeCMDClient.getApiServices("v1beta1.enmasse.io").getRetCode(), new TimeoutBudget(90, TimeUnit.SECONDS));
         }
 
     }

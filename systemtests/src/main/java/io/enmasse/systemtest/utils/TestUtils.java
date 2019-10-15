@@ -5,6 +5,7 @@
 
 package io.enmasse.systemtest.utils;
 
+import com.google.common.collect.Ordering;
 import com.google.common.io.BaseEncoding;
 import io.enmasse.address.model.Address;
 import io.enmasse.address.model.AddressSpace;
@@ -14,6 +15,7 @@ import io.enmasse.admin.model.v1.AddressPlan;
 import io.enmasse.systemtest.Endpoint;
 import io.enmasse.systemtest.logs.CustomLogger;
 import io.enmasse.systemtest.logs.GlobalLogCollector;
+import io.enmasse.systemtest.manager.ResourceManager;
 import io.enmasse.systemtest.model.addressspace.AddressSpaceType;
 import io.enmasse.systemtest.platform.Kubernetes;
 import io.enmasse.systemtest.platform.apps.SystemtestsKubernetesApps;
@@ -41,7 +43,9 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,6 +64,11 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 public class TestUtils {
 
     public interface TimeoutHandler<X extends Throwable> {
@@ -68,22 +77,6 @@ public class TestUtils {
 
     private static final Random R = new Random();
     private static Logger log = CustomLogger.getLogger();
-
-    /**
-     * scale up/down specific pod (type: Deployment) in address space
-     */
-    public static void setReplicas(Kubernetes kubernetes, String infraUuid, String deployment, int numReplicas, TimeoutBudget budget) throws InterruptedException {
-        kubernetes.setDeploymentReplicas(kubernetes.getInfraNamespace(), deployment, numReplicas);
-        Map<String, String> labels = new HashMap<>();
-        labels.put("name", deployment);
-        if (infraUuid != null) {
-            labels.put("infraUuid", infraUuid);
-        }
-        waitForNReplicas(
-                numReplicas,
-                labels,
-                budget);
-    }
 
     public static void waitForNReplicas(int expectedReplicas, Map<String, String> labelSelector, TimeoutBudget budget) throws InterruptedException {
         waitForNReplicas(expectedReplicas, labelSelector, Collections.emptyMap(), budget);
@@ -195,27 +188,6 @@ public class TestUtils {
         }
 
         return true;
-    }
-
-    /**
-     * Wait for expected count of pods within AddressSpace
-     *
-     * @param client       client for manipulation with kubernetes cluster
-     * @param addressSpace
-     * @param numExpected  count of expected pods
-     * @param budget       timeout budget - this method throws Exception when timeout is reached
-     * @throws InterruptedException
-     */
-    public static void waitForExpectedReadyPods(Kubernetes client, AddressSpace addressSpace, int numExpected, TimeoutBudget budget) throws Exception {
-        List<Pod> pods = listRunningPods(client, addressSpace);
-        while (budget.timeLeft() >= 0 && pods.size() != numExpected) {
-            Thread.sleep(2000);
-            pods = listRunningPods(client, addressSpace);
-            log.info("Got {} pods, expected: {}", pods.size(), numExpected);
-        }
-        if (pods.size() != numExpected) {
-            throw new IllegalStateException("Unable to find " + numExpected + " pods. Found : " + printPods(pods));
-        }
     }
 
     /**
@@ -793,5 +765,92 @@ public class TestUtils {
     @FunctionalInterface
     public static interface ThrowingCallable {
         void call() throws Exception;
+    }
+
+    public static void assertDefaultEnabled(final Boolean enabled) {
+        if (enabled != null && !Boolean.TRUE.equals(enabled)) {
+            fail("Default value must be 'null' or 'true'");
+        }
+    }
+
+    /**
+     * body for rest api tests
+     */
+    public static void runRestApiTest(ResourceManager manager, AddressSpace addressSpace, Address d1, Address d2) throws Exception {
+        List<String> destinationsNames = Arrays.asList(d1.getSpec().getAddress(), d2.getSpec().getAddress());
+        manager.setAddresses(d1);
+        manager.appendAddresses(d2);
+
+        //d1, d2
+        List<String> response = AddressUtils.getAddresses(addressSpace).stream().map(address -> address.getSpec().getAddress()).collect(Collectors.toList());
+        assertThat("Rest api does not return all addresses", response, is(destinationsNames));
+        log.info("addresses {} successfully created", Arrays.toString(destinationsNames.toArray()));
+
+        //get specific address d2
+        Address res = Kubernetes.getInstance().getAddressClient(addressSpace.getMetadata().getNamespace()).withName(d2.getMetadata().getName()).get();
+        assertThat("Rest api does not return specific address", res.getSpec().getAddress(), is(d2.getSpec().getAddress()));
+
+        manager.deleteAddresses(d1);
+
+        //d2
+        response = AddressUtils.getAddresses(addressSpace).stream().map(address -> address.getSpec().getAddress()).collect(Collectors.toList());
+        assertThat("Rest api does not return right addresses", response, is(destinationsNames.subList(1, 2)));
+        log.info("address {} successfully deleted", d1.getSpec().getAddress());
+
+        manager.deleteAddresses(d2);
+
+        //empty
+        List<Address> listRes = AddressUtils.getAddresses(addressSpace);
+        assertThat("Rest api returns addresses", listRes, is(Collections.emptyList()));
+        log.info("addresses {} successfully deleted", d2.getSpec().getAddress());
+
+        manager.setAddresses(d1, d2);
+        manager.deleteAddresses(d1, d2);
+
+        listRes = AddressUtils.getAddresses(addressSpace);
+        assertThat("Rest api returns addresses", listRes, is(Collections.emptyList()));
+        log.info("addresses {} successfully deleted", Arrays.toString(destinationsNames.toArray()));
+    }
+
+    //================================================================================================
+    //==================================== Asserts methods ===========================================
+    //================================================================================================
+    public static <T extends Comparable<T>> void assertSorted(String message, Iterable<T> list) throws Exception {
+        assertSorted(message, list, false);
+    }
+
+    public static <T> void assertSorted(String message, Iterable<T> list, Comparator<T> comparator) throws Exception {
+        assertSorted(message, list, false, comparator);
+    }
+
+    public static <T extends Comparable<T>> void assertSorted(String message, Iterable<T> list, boolean reverse) {
+        log.info("Assert sort reverse: " + reverse);
+        if (!reverse) {
+            assertTrue(Ordering.natural().isOrdered(list), message);
+        } else {
+            assertTrue(Ordering.natural().reverse().isOrdered(list), message);
+        }
+    }
+
+    public static <T> void assertSorted(String message, Iterable<T> list, boolean reverse, Comparator<T> comparator) {
+        log.info("Assert sort reverse: " + reverse);
+        if (!reverse) {
+            assertTrue(Ordering.from(comparator).isOrdered(list), message);
+        } else {
+            assertTrue(Ordering.from(comparator).reverse().isOrdered(list), message);
+        }
+    }
+
+    public static <T> void assertWaitForValue(T expected, Callable<T> fn, TimeoutBudget budget) throws Exception {
+        T got = null;
+        log.info("waiting for expected value '{}' ...", expected);
+        while (budget.timeLeft() >= 0) {
+            got = fn.call();
+            if (Objects.equals(expected, got)) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        fail(String.format("Incorrect result value! expected: '%s', got: '%s'", expected, Objects.requireNonNull(got)));
     }
 }
