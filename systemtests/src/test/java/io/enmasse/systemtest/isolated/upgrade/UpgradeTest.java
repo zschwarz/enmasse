@@ -148,7 +148,14 @@ class UpgradeTest extends TestBase implements ITestIsolatedStandard {
         createIoTConfigCMD(kubernetes.getInfraNamespace(), Paths.get(templates));
         Thread.sleep(30_000);
         TestUtils.waitUntilDeployed(kubernetes.getInfraNamespace());
-        //iot project
+
+        createIoTProject(kubernetes.getInfraNamespace(), Paths.get(templates));
+        Thread.sleep(30_000);
+        TestUtils.waitUntilDeployed(kubernetes.getInfraNamespace());
+
+        createIoTUser(kubernetes.getInfraNamespace(), Paths.get(templates));
+        Thread.sleep(30_000);
+
         //test messaging cez iot - dat tam devicy
 
         if (this.type.equals(EnmasseInstallType.ANSIBLE)) {
@@ -379,4 +386,15 @@ class UpgradeTest extends TestBase implements ITestIsolatedStandard {
         KubeCMDClient.applyFromFile(kubernetes.getInfraNamespace(), Paths.get(templates.toString(), "install", "components", "iot", "examples", "infinispan", "manual"));
         KubeCMDClient.applyFromFile(kubernetes.getInfraNamespace(), Paths.get(templates.toString(), "install", "components", "iot", "examples", "iot-config.yaml"));
     }
+
+    private void createIoTProject(String namespace, Path templates) {
+        log.info("Creating IoT project in namespace {}", namespace);
+        KubeCMDClient.applyFromFile(kubernetes.getInfraNamespace(), Paths.get(templates.toString(), "install", "components", "iot", "examples", "iot-project-managed.yaml"));
+    }
+
+    private void createIoTUser(String namespace, Path templates){
+        log.info("Creating IoT user in namespace {}", namespace);
+        KubeCMDClient.applyFromFile(kubernetes.getInfraNamespace(), Paths.get(templates.toString(), "install", "components", "iot", "examples", "iot-user.yaml"));
+    }
+
 }
