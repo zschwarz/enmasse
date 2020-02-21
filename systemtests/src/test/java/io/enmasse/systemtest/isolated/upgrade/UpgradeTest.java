@@ -40,12 +40,17 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.text.Format;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -154,6 +159,13 @@ class UpgradeTest extends TestBase implements ITestIsolatedStandard {
         createIoTUser(kubernetes.getInfraNamespace(), Paths.get(templates));
         Thread.sleep(30_000);
 
+        createIoTDevice(kubernetes.getInfraNamespace(), 4711);
+        setupHonoCMDClient();
+        startTelemetryConsumer();
+        sendTelemetryToCloudHTTP();
+        startEventsConsumer();
+        sendEventsToCloudHTTP();
+
         //TODO add iot devices and test them
 
         if (this.type.equals(EnmasseInstallType.ANSIBLE)) {
@@ -162,7 +174,7 @@ class UpgradeTest extends TestBase implements ITestIsolatedStandard {
             upgradeEnmasseBundle(Paths.get(Environment.getInstance().getUpgradeTemplates()));
         }
 
-        //TODO check iot devicesq
+        //TODO check iot devices
 
         AddressSpace brokered = resourcesManager.getAddressSpace("brokered");
         assertNotNull(brokered);
@@ -395,5 +407,121 @@ class UpgradeTest extends TestBase implements ITestIsolatedStandard {
         log.info("Creating IoT user in namespace {}", namespace);
         KubeCMDClient.applyFromFile(kubernetes.getInfraNamespace(), Paths.get(templates.toString(), "install", "components", "iot", "examples", "iot-user.yaml"));
     }
+
+    private void createIoTDevice(String namespace, int deviceID){
+        log.info("Registering new IoT device {} in namespace {}", deviceID, namespace);
+        String registryHost = KubeCMDClient.runOnCluster("-n", "enmasse-infra", "get", "routes", "device-registry", "--template", "'{{ .spec.host }}'").getStdOut();
+        //export REGISTRY_HOST=$(oc -n enmasse-infra get routes device-registry --template='{{ .spec.host }}')
+
+
+        Exec.execute(Arrays.asList("curl", "--insecure", "-X", "POST", "-i", "-H", "'Content-Type: application/json'",
+                "-H", String.format("\"Authorization: Bearer %s\"", kubernetes.getApiToken()),
+                String.format("https://%s/v1/devices/myapp.iot/%d", registryHost, deviceID)));
+        //curl --insecure -X POST -i -H 'Content-Type: application/json' -H "Authorization: Bearer ${TOKEN}" https://$REGISTRY_HOST/v1/devices/myapp.iot/4711
+
+
+        log.info("Setting credentials for device {}", deviceID);
+        Exec.execute(Arrays.asList("curl", "--insecure", "-X", "POST", "-i", "-H", "'Content-Type: application/json'", "-H", String.format("\"Authorization: Bearer %s\"", kubernetes.getApiToken()),
+                "--data-binary", "\'[{"
+                        + "\"type\": \"hashed-password\","
+                        + "\"auth-id\": \"sensor1\","
+                        + "\"secrets\": [{"
+                            + "\"pwd-plain\":\"'hono-secret'\""
+                            + "}]"
+                        + "}]'", String.format("https://%s/v1/devices/myapp.iot/%d", registryHost, deviceID)));
+
+
+        //curl --insecure -X PUT -i -H 'Content-Type: application/json' -H "Authorization: Bearer ${TOKEN}" --data-binary '[{
+        //	"type": "hashed-password",
+        //	"auth-id": "sensor1",
+        //	"secrets": [{
+        //		"pwd-plain":"'hono-secret'"
+        //	}]
+        //}]' https://$REGISTRY_HOST/v1/credentials/myapp.iot/4711
+    }
+
+    private void setupHonoCMDClient() throws Exception {
+
+        //https://www.eclipse.org/downloads/download.php?file=/hono/hono-cli-1.1.0-exec.jar&mirror_id=96
+        URL honoUrl = new URL("https://www.eclipse.org/downloads/download.php?file=/hono/hono-cli-1.1.0-exec.jar&mirror_id=96");
+        try (InputStream in = honoUrl.openStream()){
+            Files.copy(in, Paths.get(System.getProperty("user.dir")), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw new Exception(e.getMessage());
+        }
+
+        log.info("Setting up Eclipse Hono command-line client");
+        String certificate = KubeCMDClient.runOnCluster("-n", "myapp", "get", "addressspace", "iot", "-o", "jsonpath={.status.caCert}").getStdOut();
+        byte[] decodedCert = Base64.getDecoder().decode(certificate);
+        Files.write(Paths.get(System.getProperty("user.dir"), "tls.crt"), decodedCert);
+        //oc -n myapp get addressspace iot -o jsonpath={.status.caCert} | base64 --decode > tls.crt
+    }
+
+    private void startTelemetryConsumer(){
+        log.info("Starting the telemetry consumer");
+        String messagingHost = KubeCMDClient.runOnCluster("-n", "myapp", "addressspace", "iot", "-o", "jsonpath", "{.status.endpointStatuses[?\\(@.name==\\'messaging\\'\\)].externalHost}").getStdOut();
+        ////oc -n myapp get addressspace iot -o jsonpath={.status.endpointStatuses[?\(@.name==\'messaging\'\)].externalHost}
+
+        Exec.execute(Arrays.asList("java", "-jar", "hono-cli-*-exec.jar", "--hono.client.host", messagingHost, "--hono.client.port", "443",
+                "--hono.client.username", "consumer", "--hono.client.password", "foobar", "--tenant.id", "myapp.iot", "--hono.client.trustStorePath", "tls.crt", "--message.type", "telemetry"));
+        //java -jar hono-cli-*-exec.jar --hono.client.host=$MESSAGING_HOST --hono.client.port=$MESSAGING_PORT
+        // --hono.client.username=consumer --hono.client.password=foobar --tenant.id=myapp.iot --hono.client.trustStorePath=tls.crt --message.type=telemetry
+    }
+
+    private void startEventsConsumer(){
+        log.info("Starting the events consumer");
+        String messagingHost = KubeCMDClient.runOnCluster("-n", "myapp", "addressspace", "iot", "-o", "jsonpath", "{.status.endpointStatuses[?\\(@.name==\\'messaging\\'\\)].externalHost}").getStdOut();
+        ////oc -n myapp get addressspace iot -o jsonpath={.status.endpointStatuses[?\(@.name==\'messaging\'\)].externalHost}
+
+        Exec.execute(Arrays.asList("java", "-jar", "hono-cli-*-exec.jar", "--hono.client.host", messagingHost, "--hono.client.port", "443",
+                "--hono.client.username", "consumer", "--hono.client.password", "foobar", "--tenant.id", "myapp.iot", "--hono.client.trustStorePath", "tls.crt", "--message.type", "events"));
+        //java -jar hono-cli-*-exec.jar --hono.client.host=$MESSAGING_HOST --hono.client.port=$MESSAGING_PORT
+        // --hono.client.username=consumer --hono.client.password=foobar --tenant.id=myapp.iot --hono.client.trustStorePath=tls.crt --message.type=events
+    }
+
+    private void sendTelemetryToCloudHTTP(){
+        log.info("Sending telemetry from device to cloud using HTTP");
+        String httpRoute = KubeCMDClient.runOnCluster("-n", "enmasse-infra", "get", "routes", "iot-http-adapter", "--template", "'{{ .spec.host }}'").getStdOut();
+        Exec.execute(Arrays.asList("curl", "--insecure", "-X", "POST", "-i", "-u", "sensor1@myapp.iot:hono-secret", "-H", "'Content-Type: application/json'",
+                "--data-binary", "'{\"temp\": 5}'", String.format("https://%s/telemetry", httpRoute)));
+        //curl --insecure -X POST -i -u sensor1@myapp.iot:hono-secret -H 'Content-Type: application/json'
+        // --data-binary '{"temp": 5}' https://$(oc -n enmasse-infra get routes iot-http-adapter --template='{{ .spec.host }}')/telemetry
+    }
+
+    private void sendEventsToCloudHTTP(){
+        log.info("Sending events from device to cloud using HTTP");
+        String httpRoute = KubeCMDClient.runOnCluster("-n", "enmasse-infra", "get", "routes", "iot-http-adapter", "--template", "'{{ .spec.host }}'").getStdOut();
+        Exec.execute(Arrays.asList("curl", "--insecure", "-X", "POST", "-i", "-u", "sensor1@myapp.iot:hono-secret", "-H", "'Content-Type: application/json'",
+                "--data-binary", "'{\"temp\": 5}'", String.format("https://%s/events", httpRoute)));
+        //curl --insecure -X POST -i -u sensor1@myapp.iot:hono-secret -H 'Content-Type: application/json'
+        // --data-binary '{"temp": 5}' https://$(oc -n enmasse-infra get routes iot-http-adapter --template='{{ .spec.host }}')/events
+    }
+
+    private void sendCommandsToDeviceHTTP(int deviceID, int clientTtd){
+        log.info("Setting client ttd");
+        String httpRoute = KubeCMDClient.runOnCluster("-n", "enmasse-infra", "get", "routes", "iot-http-adapter", "--template", "'{{ .spec.host }}'").getStdOut();
+        Exec.execute(Arrays.asList("curl", "--insecure", "-X", "POST", "-i", "-u", "sensor1@myapp.iot:hono-secret", "-H", "'Content-Type: application/json'",
+                "--data-binary", "'{\"temp\": 5}'", String.format("https://%s/telemetry?hono-ttd=%d", httpRoute, clientTtd)));
+        //curl --insecure -X POST -i -u sensor1@myapp.iot:hono-secret -H 'Content-Type: application/json'
+        // --data-binary '{"temp": 5}' https://$(oc -n enmasse-infra get routes iot-http-adapter --template='{{ .spec.host }}')/telemetry?hono-ttd=600
+
+        log.info("Sending commands to IoT device {}", deviceID);
+        String messagingHost = KubeCMDClient.runOnCluster("-n", "myapp", "addressspace", "iot", "-o", "jsonpath", "{.status.endpointStatuses[?\\(@.name==\\'messaging\\'\\)].externalHost}").getStdOut();
+        //oc -n myapp get addressspace iot -o jsonpath={.status.endpointStatuses[?\(@.name==\'messaging\'\)].externalHost}
+
+        Exec.execute(Arrays.asList("java", "-jar", "hono-cli-*-exec.jar", "--hono.client.host", messagingHost, "--hono.client.port", "443",
+                "--hono.client.username", "consumer", "--hono.client.password", "foobar", "--tenant.id", "myapp.iot",
+                "--hono.client.trustStorePath", "tls.crt", "--device.id", Integer.toString(deviceID), "--spring.profiles-active", "command"));
+        //java -jar hono-cli-*-exec.jar --hono.client.host=$MESSAGING_HOST --hono.client.port=$MESSAGING_PORT
+        // --hono.client.username=consumer --hono.client.password=foobar --tenant.id=myapp.iot
+        // --hono.client.trustStorePath=tls.crt --device.id=4711 --spring.profiles.active=command
+
+        //TODO 5.5.4 Follow the instructions for entering the command’s name, payload, and content type.
+        //"-hono-command", "commandName", "-content-type", "application/json", "content-length", "13"
+        //"hono-command: commandName", "content-type: application/json", "content-length: 13"
+
+
+    }
+
 
 }
